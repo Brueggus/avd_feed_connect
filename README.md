@@ -74,13 +74,28 @@ A combined view of all accounts is deferred to a later release.
 ## Silent connection sign-in
 
 FreeRDP's `/sec:aad` needs an Entra token at connect time. Rather than let
-FreeRDP open its **own** second browser window for that, this app builds
-FreeRDP without a webview and drives it over a pseudo-terminal: it intercepts
-FreeRDP's `Browse to:` prompt, resolves the URL in a hidden WebKit view that
-**shares the sign-in SSO session**, and hands the result back. So the
-connection token is acquired with no visible prompt; a window only appears if
-MFA/consent is genuinely required (after a short delay). This also removes a
-whole class of blank/second-window bugs the bundled FreeRDP webview could hit.
+FreeRDP open its **own** second browser window for that, this app disables
+FreeRDP's AAD helpers (`/azure:auth-helper:` → nonexistent path) and drives the
+client over a pseudo-terminal: it intercepts FreeRDP's `Browse to:` prompt,
+resolves the URL in a hidden WebKit view that **shares the sign-in SSO
+session**, and hands the result back. So the connection token is acquired with
+no visible prompt when cookies are enough; a window only appears if
+MFA/consent is genuinely required (after a short delay). Authenticator or
+password MFA can be completed there.
+
+That shared-SSO path is why distro `freerdp-webview-aad-helper` is skipped: it
+uses a **separate** cookie jar, so every App connect would ask for MFA again
+(and its WebKit still cannot do FIDO2/passkeys).
+
+**Passkeys / security keys.** WebKitGTK has no WebAuthn, so Entra will not
+offer a passkey in the embedded view. Use **Open in browser for passkey /
+security key** on the connection sign-in window — that restarts the connect
+with FreeRDP's xdg AAD helper so the system browser uses an `ms-appx-web://`
+broker redirect (passkeys work; no copy/paste). Set `AVD_AAD_HELPER=xdg` to
+always use that path. Do **not** open FreeRDP's raw `Browse to:` /
+`…/oauth2/nativeclient` URL yourself: Microsoft shows a phishing warning there
+and redirects away after a few seconds (the code is in the address bar, not a
+password). That paste flow is only a fallback if the helper is missing.
 
 ## Tray icon
 
@@ -264,7 +279,11 @@ window may never appear — the session connects, shows "Loading", and then look
 stuck or drops. If that happens, right-click that tile → **Settings** → set
 **Open RemoteApp as → Full desktop**. The app then connects to the host's
 **whole desktop** so you can launch the published app from inside it, the way a
-desktop tile works.
+desktop tile works. Use the same setting if **in-session FIDO2/passkeys**
+(WebAuthn redirection via RDPEWA) fail in the app window — FreeRDP's PIN/touch
+dialogs are reliable on a full desktop session, while SDL RemoteApp/RAIL is
+experimental. Only local USB FIDO2 security keys are supported; platform/synced
+passkeys are not.
 
 *Why this route.* True single-window RemoteApp (RAIL) rendering needs a client
 that can draw remote app windows on their own; the bundled SDL FreeRDP marks its
@@ -490,6 +509,7 @@ Both methods write the same setting.
 | `AVD_MULTIMON` | Force multi-monitor on (`1`/`on`) or off (`0`/`off`). Overrides the auto monitor-count detection. |
 | `AVD_REMOTEAPP` | `desktop` opens **every** RemoteApp tile as the host's full desktop instead of the app window (the per-tile **Open RemoteApp as** setting does the same for one tile). |
 | `AVD_SHARE` | `home` redirects your home folder into the remote session; `off` disables sharing; any other value is treated as a folder path. Overrides the **Shared folder** setting. |
+| `AVD_AAD_HELPER` | `xdg` (or an absolute helper path) runs connection-time Entra auth in the **system browser** so FIDO2/passkeys work. Default is off: shared-SSO WebKit + `Browse to:` (silent when cookies suffice). |
 | `AVD_EXTRA_ARGS` | Extra `sdl-freerdp` flags appended verbatim, e.g. `"/gfx"`, `"/network:auto"`, or your own `/multimon` / `-multimon` (which then wins over the auto choice). |
 | `AVD_SDL_FREERDP` | Path to the `sdl-freerdp` binary (defaults to the bundled one). |
 | `AVD_TRAY` | `0`/`off` disables the tray icon (closing the window then always quits). |

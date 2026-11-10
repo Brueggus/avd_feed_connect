@@ -110,13 +110,55 @@ def test_malformed_display_args_are_reported(tmp_path):
 
 
 def test_argv_core_flags(tmp_path):
+    from avd_feed_connect import config
     argv = build_argv("/app/bin/sdl-freerdp", _rdp(tmp_path, "enablerdsaadauth:i:1\n"), "")
     assert argv[0] == "/app/bin/sdl-freerdp"
     assert argv[1] == _rdp(tmp_path, "enablerdsaadauth:i:1\n")
     assert "/gateway:type:arm" in argv
     assert "/sec:aad" in argv
+    helper = config.azure_aad_auth_helper_arg().removeprefix("/azure:")
+    assert any(a.startswith("/azure:") and helper in a for a in argv)
     assert "/f" in argv
     assert "-multimon" in argv
+
+
+def test_argv_skips_aad_helper_only_for_aad(tmp_path):
+    from avd_feed_connect import config
+    aad = build_argv("sdl-freerdp", _rdp(tmp_path, "enablerdsaadauth:i:1\n"), "")
+    nla = build_argv("sdl-freerdp", _rdp(tmp_path, "enablerdsaadauth:i:0\n"), "")
+    helper = config.azure_aad_auth_helper_arg().removeprefix("/azure:")
+    assert any(a.startswith("/azure:") and helper in a for a in aad)
+    assert all(helper not in a for a in nla)
+    assert "/sec:nla" in nla
+
+
+def test_aad_helper_defaults_to_browse_to(monkeypatch):
+    import os
+    from avd_feed_connect import config
+    monkeypatch.delenv("AVD_AAD_HELPER", raising=False)
+    assert config.azure_aad_auth_helper_arg() == (
+        f"/azure:auth-helper:{config.AAD_AUTH_HELPER_FORCE_BROWSE_TO}")
+    path = config.aad_xdg_helper_path()
+    assert path and os.path.isfile(path)
+    assert os.path.isfile(os.path.join(os.path.dirname(path), "freerdp-aad-handler"))
+
+
+def test_aad_helper_xdg_opt_in(monkeypatch):
+    from avd_feed_connect import config
+    monkeypatch.setenv("AVD_AAD_HELPER", "xdg")
+    path = config.aad_xdg_helper_path()
+    assert config.azure_aad_auth_helper_arg() == f"/azure:auth-helper:{path}"
+
+
+def test_aad_helper_prefer_xdg_without_env(monkeypatch):
+    import os
+    from avd_feed_connect import config
+    monkeypatch.delenv("AVD_AAD_HELPER", raising=False)
+    path = config.aad_xdg_helper_path()
+    assert path and os.path.isfile(path)
+    assert config.azure_aad_auth_helper_arg(prefer_xdg=True) == f"/azure:auth-helper:{path}"
+    assert config.azure_aad_auth_helper_arg() == (
+        f"/azure:auth-helper:{config.AAD_AUTH_HELPER_FORCE_BROWSE_TO}")
 
 
 def test_argv_includes_user_when_upn_set(tmp_path):

@@ -34,4 +34,4 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-avd_feed_connect = ["locales/*.json"]
+avd_feed_connect = ["locales/*.json", "helpers/aad/*"]

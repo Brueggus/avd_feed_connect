@@ -208,6 +208,12 @@ modules:
       # the launcher's SSO cookies), so the connection-time token is silent and
       # there is no second embedded browser to blank out / crash.
       - -DWITH_WEBVIEW=OFF
+      # Also disable the newer out-of-process webview AAD helper (3.32+). When
+      # ON, FreeRDP auto-starts freerdp-webview-aad-helper for /sec:aad; that
+      # widget cannot complete FIDO2/passkeys and blocks connect for minutes.
+      - -DWITH_WEBVIEW_AAD_AUTH_HELPER=OFF
+      - -DWITH_XDG_AAD_AUTH_HELPER=OFF
+      - -DWITH_QT_AAD_AUTH_HELPER=OFF
       - -DWITH_PULSE=ON
       - -DWITH_FFMPEG=ON
       - -DWITH_SWSCALE=ON

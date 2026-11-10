@@ -190,8 +190,14 @@ def build_argv(sdl, path, upn):
     argv = [sdl, path, f"/gateway:{config.gateway_arg()}", f"/sec:{decision.mode}"]
     if decision.mode == "nla":
         argv.append("/d:")
+    az_parts = []
     if config.azure_arg():  # sovereign cloud: point AAD at its Entra via /azure
-        argv.append(f"/azure:{config.azure_arg()}")
+        az_parts.append(config.azure_arg())
+    if decision.mode == "aad":
+        # Browse-to: + shared SSO by default; see config.azure_aad_auth_helper_arg.
+        az_parts.append(config.azure_aad_auth_helper_arg().removeprefix("/azure:"))
+    if az_parts:
+        argv.append("/azure:" + ",".join(az_parts))
     if upn:
         argv.append(f"/u:{upn}")
     # Pin the host cert on first use by default; AVD_CERT=ignore turns the check

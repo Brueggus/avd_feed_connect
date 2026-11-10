@@ -2037,6 +2037,7 @@ class AvdApp(Gtk.Application):
             self._set_status(tr("{resource} is already open").format(resource=res['title']), session)
             return
         attempt = ConnectionAttempt()
+        attempt.windowed = windowed
         child._attempt = attempt
         attempt.is_current = lambda: getattr(child, "_attempt", None) is attempt
         child._launching = True
@@ -2080,6 +2081,7 @@ class AvdApp(Gtk.Application):
             attempt = ConnectionAttempt()
             child._attempt = attempt
             attempt.is_current = lambda: getattr(child, "_attempt", None) is attempt
+        attempt.windowed = windowed
         if not attempt.active():
             return
         token_ready = self._ensure_token(session)
@@ -2186,9 +2188,21 @@ class AvdApp(Gtk.Application):
         # via /azure; scheme_conn additionally swaps the redirect to ms-appx-web
         # so the prompt auto-captures (commercial default stays empty — the
         # seamless SSO webview — unless scheme_conn forces the browser path).
+        # Combine with auth-helper on AAD: a second /azure: would overwrite.
+        az_parts = []
         az = config.azure_arg(scheme=scheme_conn)
         if az:
-            argv.append(f"/azure:{az}")
+            az_parts.append(az)
+        if not nla:
+            # Skip FreeRDP's own AAD helpers (distro webview = separate cookies →
+            # MFA on every connect). Browse-to: is resolved in our shared-SSO
+            # WebKit view; passkeys use the in-dialog "Open in browser" button
+            # (one-shot xdg/ms-appx-web) or AVD_AAD_HELPER=xdg.
+            helper = config.azure_aad_auth_helper_arg(
+                prefer_xdg=bool(getattr(attempt, "prefer_xdg_aad", False)))
+            az_parts.append(helper.removeprefix("/azure:"))
+        if az_parts:
+            argv.append("/azure:" + ",".join(az_parts))
         if session.client.upn:
             argv.append(f"/u:{session.client.upn}")
         # RemoteApp (RAIL) tiles: the bundled SDL client can't render RAIL windows,
@@ -2467,7 +2481,19 @@ class AvdApp(Gtk.Application):
         self._apply_ua(wv)
         win = create(Gtk.Window, title=tr("Sign in — {resource}").format(resource=res['title']), transient_for=self.win)
         win.set_default_size(520, 640)
-        win.set_child(wv)
+        box = create(Gtk.Box, orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        # WebKitGTK cannot do WebAuthn; offer the system browser for passkeys /
+        # security keys when FreeRDP fell back to Browse-to: (helper missing).
+        browser_btn = create(Gtk.Button,
+            label=tr("Open in browser for passkey / security key"))
+        browser_btn.add_css_class("suggested-action")
+        paste = create(Gtk.Entry, placeholder_text=tr(
+            "After browser sign-in, paste the blank-page address here"))
+        paste.set_visible(False)
+        box.append(browser_btn)
+        box.append(paste)
+        box.append(wv)
+        win.set_child(box)
         holder = {"done": False, "shown": False, "timer": 0}
 
         def finish(redirect_uri=None):
@@ -2509,6 +2535,68 @@ class AvdApp(Gtk.Application):
                     return True
             return False
 
+        def open_browser(*_):
+            # Prefer FreeRDP's xdg helper (ms-appx-web broker redirect). Opening the
+            # Browse-to URL in a normal browser lands on Microsoft's nativeclient
+            # page, which shows a phishing warning and redirects away after ~3s.
+            helper = config.aad_xdg_helper_path()
+            if helper and os.path.isfile(helper):
+                windowed = bool(getattr(attempt, "windowed", False)) if attempt else False
+                holder["done"] = True
+                if holder["timer"]:
+                    GLib.source_remove(holder["timer"])
+                    holder["timer"] = 0
+                wv.stop_loading()
+                if attempt is not None and attempt.close_auth is close_auth:
+                    attempt.close_auth = None
+                win.destroy()
+                if attempt is not None and not attempt.cancelled.is_set():
+                    attempt.cancel()
+                child = self._child_for(res["id"], session)
+
+                def start_xdg():
+                    if session.removed or child is None:
+                        return False
+                    new_attempt = ConnectionAttempt()
+                    new_attempt.prefer_xdg_aad = True
+                    new_attempt.windowed = windowed
+                    child._attempt = new_attempt
+                    new_attempt.is_current = (
+                        lambda: getattr(child, "_attempt", None) is new_attempt)
+                    child._launching = True
+                    self._set_tile_state(
+                        res["id"], "state-connecting", session, attempt=new_attempt)
+                    self._set_status(
+                        tr("Opening system browser for passkey sign-in…"),
+                        session, attempt=new_attempt)
+                    self._set_connecting(
+                        res["id"], res["title"], True, session, attempt=new_attempt)
+                    threading.Thread(
+                        target=self._launch,
+                        args=(child, res, windowed, session, new_attempt),
+                        daemon=True).start()
+                    return False
+
+                GLib.idle_add(start_xdg)
+                return
+            try:
+                Gio.AppInfo.launch_default_for_uri(url, None)
+            except GLib.Error as error:
+                self._error(tr("Could not open browser: {error}").format(error=error.message))
+                return
+            paste.set_visible(True)
+            paste.grab_focus()
+            self._set_status(
+                tr("Ignore the phishing warning — copy the address-bar URL within a few seconds and paste it here"),
+                session, attempt=attempt)
+
+        def on_paste_activate(entry):
+            text = (entry.get_text() or "").strip()
+            if "code=" in text and ("nativeclient" in text or text.startswith("http")):
+                finish(text)
+
+        browser_btn.connect("clicked", open_browser)
+        paste.connect("activate", on_paste_activate)
         wv.connect("create", lambda *_a: None)
         wv.connect("decide-policy", on_decide)
         win.connect("close-request", close_auth)
@@ -3025,7 +3113,7 @@ class AvdApp(Gtk.Application):
                                       if rav in storage.REMOTEAPP_VALUES else 0)
             box.append(self._form_row(tr("Open RemoteApp as"), remoteapp_dd))
             remoteapp_note = create(Gtk.Label, xalign=0, wrap=True,
-                label=tr("Full desktop opens the whole remote PC so you can launch the app yourself — use this if the app window never appears."))
+                label=tr("Full desktop opens the whole remote PC so you can launch the app yourself — use this if the app window never appears, or if in-session FIDO2/passkeys fail in the app window (SDL RemoteApp/RAIL is experimental)."))
             remoteapp_note.add_css_class("tile-sub")
             box.append(remoteapp_note)
 

@@ -164,6 +164,63 @@ SDL_LIBS = os.environ.get("AVD_SDL_LIBS", os.path.join(HOME, "opt", "sdl3", "lib
 AAD_LOGIN_HOST = _C["authority"]
 
 
+# Sent as /azure:auth-helper: so FreeRDP does not auto-start a distro webview
+# helper (separate cookie jar → MFA on every connect). Browse-to: is then
+# serviced by our WebKit view that shares the launcher SSO session.
+AAD_AUTH_HELPER_FORCE_BROWSE_TO = "/nonexistent/avd-feed-connect-force-browse-to"
+
+
+def aad_xdg_helper_path():
+    """Path to the vendored FreeRDP xdg-open AAD helper (system browser + passkeys).
+
+    Packaged next to this module; not selected by default (see
+    :func:`azure_aad_auth_helper_arg`). ``AVD_AAD_HELPER=xdg`` or an absolute
+    path opts in. The connection WebKit dialog also has an
+    ``Open in browser for passkey`` button for one-shot use.
+    """
+    override = os.environ.get("AVD_AAD_HELPER", "").strip()
+    if override and override.lower() != "xdg":
+        return override
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "helpers", "aad", "freerdp-xdg-aad-helper")
+    return here if os.path.isfile(here) else ""
+
+
+def _prepare_aad_xdg_helper():
+    """Make the vendored helper (+ redirect handler) executable; return its path or ''."""
+    path = aad_xdg_helper_path()
+    if not (path and os.path.isfile(path)):
+        return ""
+    try:
+        os.chmod(path, 0o755)
+        handler = os.path.join(os.path.dirname(path), "freerdp-aad-handler")
+        if os.path.isfile(handler):
+            os.chmod(handler, 0o755)
+    except OSError:
+        pass
+    return path
+
+
+def azure_aad_auth_helper_arg(*, prefer_xdg=False):
+    """FreeRDP ``/azure:auth-helper:`` — Browse-to by default; xdg only if opted in.
+
+    Default: a nonexistent path so FreeRDP skips freerdp-webview-aad-helper and
+    prints ``Browse to:``, which we resolve in the shared-SSO WebKit view
+    (silent when cookies suffice; Authenticator MFA in-window when not).
+
+    ``prefer_xdg=True``, ``AVD_AAD_HELPER=xdg``, or a helper path selects the
+    system browser with an ``ms-appx-web://`` broker redirect so FIDO2/passkeys
+    work without Microsoft's ``nativeclient`` phishing interstitial (at the
+    cost of a separate browser SSO session).
+    """
+    override = os.environ.get("AVD_AAD_HELPER", "").strip()
+    if prefer_xdg or override:
+        path = _prepare_aad_xdg_helper()
+        if path:
+            return f"/azure:auth-helper:{path}"
+    return f"/azure:auth-helper:{AAD_AUTH_HELPER_FORCE_BROWSE_TO}"
+
+
 def is_aad_login_url(url):
     """True only for an https URL on the Entra login host. FreeRDP's "Browse to:"
     URL is loaded in a WebView that shares our SSO cookies, so nothing else
